@@ -4,16 +4,17 @@ use std::env;
 use std::fs;
 
 use clap::Parser;
+use clap::Subcommand;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
-    init: Commands,
+    command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Init a git repo
     Init,
@@ -32,7 +33,7 @@ fn main() -> Result<(), std::io::Error> {
             fs::write(".git/HEAD", "ref: refs/heads/main\n").unwrap();
             println!("Initialized git directory")
         }
-        unknown => println!("unknown command: {unknown}"),
+        unknown => println!("unknown command: {:?}", unknown),
     }
 
     Ok(())
