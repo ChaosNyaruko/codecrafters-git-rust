@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let s: Vec<_> = s.splitn(3, |c| c == ' ' || c == '\0').collect();
             let size = s[1].parse::<usize>()?;
             assert_eq!(s[2].len(), size);
-            println!("{}", s[2])
+            print!("{}", s[2])
         }
     }
 
