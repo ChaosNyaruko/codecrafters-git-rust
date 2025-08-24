@@ -4,12 +4,15 @@ use std::env;
 use std::fs;
 use std::io::BufRead;
 use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -30,9 +33,15 @@ enum Commands {
 
         object: String,
     },
+    HashObject {
+        #[arg(short)]
+        write_object: bool,
+
+        filename: String,
+    },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), anyhow::Error> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
 
@@ -51,6 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             // use std::env;
             // println!("cwd = {}", env::current_dir()?.display());
+            if !*pretty_print {
+                anyhow::bail!("we only support pretty_print (-p) now");
+            }
             let prefix = &object[..2];
             let path = &object[2..];
             let path = PathBuf::from(".git/objects").join(prefix).join(path);
@@ -71,6 +83,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let content = content.read(&mut tmp)?;
             assert!(content == size as usize);
             print!("{}", String::from_utf8(tmp)?)
+        }
+        Commands::HashObject {
+            write_object,
+            filename,
+        } => {
+            use sha1::{Digest, Sha1};
+
+            let mut hasher = Sha1::new();
+            let mut file = std::fs::read(filename).context("read file err")?;
+            let mut size = Vec::from(file.len().to_string());
+            let mut data = vec![b'b', b'l', b'o', b'b', b' '];
+            data.append(&mut size);
+            data.push(b'\0');
+            data.append(&mut file);
+            hasher.update(&data);
+            let blob_hash = hasher.finalize();
+            let blob_hash = format!("{:x}", blob_hash);
+            println!("{}", blob_hash);
+
+            let prefix = &blob_hash[..2];
+            let path = &blob_hash[2..];
+            let path = PathBuf::from(".git/objects").join(prefix).join(path);
+
+            if *write_object {
+                let f = std::fs::File::open(path)?;
+                let mut e = ZlibEncoder::new(f, Compression::fast());
+                e.write_all(&data).context("write object file error")?
+            }
         }
     }
 
