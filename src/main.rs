@@ -2,6 +2,7 @@
 use std::env;
 #[allow(unused_imports)]
 use std::fs;
+use std::io::BufRead;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -53,14 +54,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prefix = &object[..2];
             let path = &object[2..];
             let path = PathBuf::from(".git/objects").join(prefix).join(path);
-            let obj = std::fs::read(&path).context(format!("read {:?} err", path))?;
-            let mut z = ZlibDecoder::new(&obj[..]);
-            let mut s = String::new();
-            z.read_to_string(&mut s)?;
-            let s: Vec<_> = s.splitn(3, |c| c == ' ' || c == '\0').collect();
-            let size = s[1].parse::<usize>()?;
-            assert_eq!(s[2].len(), size);
-            print!("{}", s[2])
+            let f = std::fs::File::open(&path).context(format!("read {:?} err", path))?;
+            let z = ZlibDecoder::new(f);
+            let mut reader = std::io::BufReader::new(z);
+            let mut tmp = Vec::new();
+            let type_n = reader.read_until(' ' as u8, &mut tmp)?;
+            assert!(type_n > 0, "we must have a type");
+            let size_n = reader.read_until('\0' as u8, &mut tmp)?;
+            let size_vec = tmp[type_n..type_n + size_n - 1].to_owned();
+            let size_str = String::from_utf8(size_vec)?;
+            let size = size_str
+                .parse::<u64>()
+                .context(format!("num: {:?}", &size_str))?;
+            tmp.resize(size as usize, 0);
+            let mut content = reader.take(size);
+            let content = content.read(&mut tmp)?;
+            assert!(content == size as usize);
+            print!("{}", String::from_utf8(tmp)?)
         }
     }
 
