@@ -102,12 +102,17 @@ fn main() -> Result<(), anyhow::Error> {
             let blob_hash = format!("{:x}", blob_hash);
             println!("{}", blob_hash);
 
-            let prefix = &blob_hash[..2];
-            let path = &blob_hash[2..];
-            let path = PathBuf::from(".git/objects").join(prefix).join(path);
-
             if *write_object {
-                let f = std::fs::File::open(path)?;
+                let prefix = &blob_hash[..2];
+                let path = &blob_hash[2..];
+                let path = PathBuf::from(".git/objects").join(prefix).join(path);
+                let f = if std::fs::exists(&path)? {
+                    std::fs::File::open(&path).context(format!("open file {:?}", path))?
+                } else {
+                    let prefix = PathBuf::from(".git/objects").join(prefix);
+                    std::fs::create_dir_all(&prefix)?;
+                    std::fs::File::create(&path).context(format!("create file {:?}", path))?
+                };
                 let mut e = ZlibEncoder::new(f, Compression::fast());
                 e.write_all(&data).context("write object file error")?
             }
