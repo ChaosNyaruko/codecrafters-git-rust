@@ -39,6 +39,123 @@ enum Commands {
 
         filename: String,
     },
+    LsTree {
+        #[arg(long = "name-only")]
+        name_only: bool,
+
+        object: String,
+    },
+}
+
+enum ObjectType {
+    Blob,
+    Tree,
+    Commit,
+}
+
+impl std::fmt::Display for ObjectType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ObjectType::Blob => "blob",
+            ObjectType::Tree => "tree",
+            ObjectType::Commit => "commit",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+struct GitObject {
+    _size: usize,
+    kind: ObjectType,
+    content: Vec<u8>,
+}
+
+impl GitObject {
+    fn new(object: &String) -> Result<Self, anyhow::Error> {
+        let prefix = &object[..2];
+        let path = &object[2..];
+        let path = PathBuf::from(".git/objects").join(prefix).join(path);
+        let f = std::fs::File::open(&path).context(format!("read {:?} err", path))?;
+        let z = ZlibDecoder::new(f);
+        let mut reader = std::io::BufReader::new(z);
+        let mut kind = Vec::new();
+        let type_n = reader.read_until(' ' as u8, &mut kind)?;
+        assert!(type_n > 0, "we must have a type");
+        let kind = String::from_utf8(kind).context("parse object type")?;
+        let kind = match kind.as_str() {
+            "blob " => ObjectType::Blob,
+            "tree " => ObjectType::Tree,
+            "commit " => ObjectType::Commit,
+            _ => unreachable!("unsupport object type {}", kind),
+        };
+        let mut size = Vec::new();
+        reader.read_until('\0' as u8, &mut size)?;
+        let size_str = str::from_utf8(&size[..size.len() - 1]).context("convert size")?;
+        let size = size_str
+            .parse::<usize>()
+            .context(format!("num: {:?}", &size_str))?;
+        // TODO: how to "reuse the tmp buffer"
+        let mut content = Vec::with_capacity(size);
+        // let mut reader = reader.take(size as u64);
+        let content_len = reader.read_to_end(&mut content)?;
+        assert_eq!(content_len, size as usize, "{object}");
+        Ok(GitObject {
+            _size: size,
+            kind,
+            content,
+        })
+    }
+
+    fn cat(&self, name_only: bool) -> Result<(), anyhow::Error> {
+        match self.kind {
+            ObjectType::Blob => {
+                // TODO: perf
+                print!("{}", String::from_utf8(self.content.clone())?)
+            }
+            ObjectType::Tree => {
+                // TODO: perf
+                let mut i = 0;
+                loop {
+                    let mut mode = Vec::with_capacity(6);
+                    while i < self.content.len() {
+                        let c = self.content[i];
+                        i += 1;
+                        if c == b' ' {
+                            break;
+                        }
+                        mode.push(c);
+                    }
+                    let mode = format!("{:0>6}", str::from_utf8(&mode)?);
+
+                    let mut name = Vec::new();
+                    while i < self.content.len() {
+                        let c = self.content[i];
+                        i += 1;
+                        if c == b'\0' {
+                            break;
+                        }
+                        name.push(c);
+                    }
+                    let name = str::from_utf8(&name)?;
+
+                    let hash = &self.content[i..i + 20];
+                    let hash = hex::encode(hash);
+                    i += 20;
+                    let item = GitObject::new(&hash).context(format!("{name}, {hash}"))?;
+                    if !name_only {
+                        println!("{} {} {}\t{}", mode, item.kind, hash, name);
+                    } else {
+                        println!("{}", name);
+                    }
+                    if i >= self.content.len() {
+                        break;
+                    }
+                }
+            }
+            ObjectType::Commit => unimplemented!("commit cannot be printed"),
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -63,26 +180,8 @@ fn main() -> Result<(), anyhow::Error> {
             if !*pretty_print {
                 anyhow::bail!("we only support pretty_print (-p) now");
             }
-            let prefix = &object[..2];
-            let path = &object[2..];
-            let path = PathBuf::from(".git/objects").join(prefix).join(path);
-            let f = std::fs::File::open(&path).context(format!("read {:?} err", path))?;
-            let z = ZlibDecoder::new(f);
-            let mut reader = std::io::BufReader::new(z);
-            let mut tmp = Vec::new();
-            let type_n = reader.read_until(' ' as u8, &mut tmp)?;
-            assert!(type_n > 0, "we must have a type");
-            let size_n = reader.read_until('\0' as u8, &mut tmp)?;
-            let size_vec = tmp[type_n..type_n + size_n - 1].to_owned();
-            let size_str = String::from_utf8(size_vec)?;
-            let size = size_str
-                .parse::<u64>()
-                .context(format!("num: {:?}", &size_str))?;
-            tmp.resize(size as usize, 0);
-            let mut content = reader.take(size);
-            let content = content.read(&mut tmp)?;
-            assert!(content == size as usize);
-            print!("{}", String::from_utf8(tmp)?)
+            let obj = GitObject::new(object)?;
+            obj.cat(false)?
         }
         Commands::HashObject {
             write_object,
@@ -116,6 +215,10 @@ fn main() -> Result<(), anyhow::Error> {
                 let mut e = ZlibEncoder::new(f, Compression::fast());
                 e.write_all(&data).context("write object file error")?
             }
+        }
+        Commands::LsTree { name_only, object } => {
+            let obj = GitObject::new(object)?;
+            obj.cat(*name_only)?;
         }
     }
 
