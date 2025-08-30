@@ -78,39 +78,37 @@ impl GitObject {
         let f = std::fs::File::open(&path).context(format!("read {:?} err", path))?;
         let z = ZlibDecoder::new(f);
         let mut reader = std::io::BufReader::new(z);
-        let mut kind = Vec::new();
-        let type_n = reader.read_until(' ' as u8, &mut kind)?;
+        let mut buf = Vec::new();
+        let type_n = reader.read_until(' ' as u8, &mut buf)?;
         assert!(type_n > 0, "we must have a type");
-        let kind = String::from_utf8(kind).context("parse object type")?;
-        let kind = match kind.as_str() {
+        let kind = str::from_utf8(&buf).context("parse object type")?;
+        let kind = match kind {
             "blob " => ObjectType::Blob,
             "tree " => ObjectType::Tree,
             "commit " => ObjectType::Commit,
             _ => unreachable!("unsupport object type {}", kind),
         };
-        let mut size = Vec::new();
-        reader.read_until('\0' as u8, &mut size)?;
-        let size_str = str::from_utf8(&size[..size.len() - 1]).context("convert size")?;
+        buf.clear();
+        reader.read_until('\0' as u8, &mut buf)?;
+        let size_str = str::from_utf8(&buf[..buf.len() - 1]).context("convert size")?;
         let size = size_str
             .parse::<usize>()
             .context(format!("num: {:?}", &size_str))?;
-        // TODO: how to "reuse the tmp buffer"
-        let mut content = Vec::with_capacity(size);
-        // let mut reader = reader.take(size as u64);
-        let content_len = reader.read_to_end(&mut content)?;
+        buf.clear();
+        let mut reader = reader.take(size as u64);
+        let content_len = reader.read_to_end(&mut buf)?;
         assert_eq!(content_len, size as usize, "{object}");
         Ok(GitObject {
             _size: size,
             kind,
-            content,
+            content: buf,
         })
     }
 
     fn cat(&self, name_only: bool) -> Result<(), anyhow::Error> {
         match self.kind {
             ObjectType::Blob => {
-                // TODO: perf
-                print!("{}", String::from_utf8(self.content.clone())?)
+                print!("{}", str::from_utf8(&self.content)?)
             }
             ObjectType::Tree => {
                 // TODO: perf
