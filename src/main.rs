@@ -200,7 +200,7 @@ fn main() -> Result<(), anyhow::Error> {
             //
             // calc hashes and write to the object file.
             //
-            let hash = dir_hash(Path::new("."), true, false)?;
+            let hash = dir_hash(Path::new("."), true, true)?;
             println!("{hash}")
         }
     }
