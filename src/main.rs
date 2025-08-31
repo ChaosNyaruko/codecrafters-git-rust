@@ -304,7 +304,7 @@ fn dir_hash(dir: &Path, print: bool, write: bool) -> Result<String, anyhow::Erro
         buf.extend_from_slice(hex::decode(obj.hash.clone()).unwrap().as_slice());
     }
     if print {
-        eprintln!("buf len {:?}/{},\n{}", dir, buf.len(), objs);
+        eprintln!("buf len {:?}/{}\n{}", dir, buf.len(), objs);
     }
 
     let mut data = vec![b't', b'r', b'e', b'e', b' '];
@@ -317,7 +317,7 @@ fn dir_hash(dir: &Path, print: bool, write: bool) -> Result<String, anyhow::Erro
     let tree_hash = hasher.finalize();
     let tree_hash = format!("{:x}", tree_hash);
     if write {
-        write_object(&tree_hash, &buf).context("write to tree object")?;
+        write_object(&tree_hash, &data).context("write to tree object")?;
     }
     Ok(tree_hash)
 }
