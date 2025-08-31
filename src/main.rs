@@ -1,18 +1,16 @@
+use sha1::{Digest, Sha1};
 #[allow(unused_imports)]
 use std::env;
-#[allow(unused_imports)]
-use std::fs;
-use std::io::BufRead;
-use std::io::Read;
-use std::io::Write;
-use std::path::PathBuf;
+use std::fs::{self, DirEntry};
+use std::{
+    io::{BufRead, Read, Write},
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -45,8 +43,10 @@ enum Commands {
 
         object: String,
     },
+    WriteTree,
 }
 
+#[derive(Debug)]
 enum ObjectType {
     Blob,
     Tree,
@@ -185,40 +185,171 @@ fn main() -> Result<(), anyhow::Error> {
             write_object,
             filename,
         } => {
-            use sha1::{Digest, Sha1};
-
-            let mut hasher = Sha1::new();
-            let mut file = std::fs::read(filename).context("read file err")?;
-            let mut size = Vec::from(file.len().to_string());
-            let mut data = vec![b'b', b'l', b'o', b'b', b' '];
-            data.append(&mut size);
-            data.push(b'\0');
-            data.append(&mut file);
-            hasher.update(&data);
-            let blob_hash = hasher.finalize();
-            let blob_hash = format!("{:x}", blob_hash);
-            println!("{}", blob_hash);
-
-            if *write_object {
-                let prefix = &blob_hash[..2];
-                let path = &blob_hash[2..];
-                let path = PathBuf::from(".git/objects").join(prefix).join(path);
-                let f = if std::fs::exists(&path)? {
-                    std::fs::File::open(&path).context(format!("open file {:?}", path))?
-                } else {
-                    let prefix = PathBuf::from(".git/objects").join(prefix);
-                    std::fs::create_dir_all(&prefix)?;
-                    std::fs::File::create(&path).context(format!("create file {:?}", path))?
-                };
-                let mut e = ZlibEncoder::new(f, Compression::fast());
-                e.write_all(&data).context("write object file error")?
-            }
+            let hash = calc_blob_hash(Path::new(filename), *write_object)?;
+            println!("{}", hash);
         }
         Commands::LsTree { name_only, object } => {
             let obj = GitObject::new(object)?;
             obj.cat(*name_only)?;
         }
+        Commands::WriteTree => {
+            // SKIP: read all files/directories(recursively) where .git exists, now we just assume
+            // the command must be executed at where .git exactly exists.
+            //
+            // sort the entries
+            //
+            // calc hashes and write to the object file.
+            //
+            let hash = dir_hash(Path::new("."), true, true)?;
+            println!("{hash}")
+        }
     }
 
     Ok(())
+}
+
+struct Objects(Vec<Object>);
+// TODO: combine it with GitObject
+#[derive(Debug)]
+struct Object {
+    kind: ObjectType,
+    size: usize,
+    hash: String,
+    path: PathBuf,
+    mode: &'static str,
+}
+
+impl std::fmt::Display for Objects {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for item in &self.0 {
+            write!(f, "{}\n", item)?; // uses MyStruct::fmt
+        }
+        write!(f, "")
+    }
+}
+
+impl std::fmt::Display for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:0>6} {} {:?} {}",
+            self.mode,
+            self.kind,
+            self.path.file_name().unwrap(),
+            self.hash
+        )
+    }
+}
+
+fn dir_hash(dir: &Path, print: bool, write: bool) -> Result<String, anyhow::Error> {
+    let mut objs = Objects(Vec::new());
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let mut obj = Object {
+                size: 0,
+                hash: String::new(),
+                path: entry.path(),
+                kind: ObjectType::Blob,
+                mode: "000000",
+            };
+            let path = entry.path();
+            // ignore the ".git" directory
+            if path.is_dir()
+                && path.file_name().unwrap().to_str().unwrap().cmp(".git")
+                    == std::cmp::Ordering::Equal
+            {
+                continue;
+            }
+            if path.is_dir() {
+                obj.hash = dir_hash(&path, false, true)?;
+                obj.kind = ObjectType::Tree;
+            } else {
+                obj.kind = ObjectType::Blob;
+                obj.hash = calc_blob_hash(&path, true)?;
+            }
+            objs.0.push(obj);
+        }
+    }
+    objs.0.sort_by(|p1, p2| {
+        let oa = p1.path.file_name().expect("oa should be Some");
+        let ob = p2.path.file_name().expect("ob should be Some");
+        oa.cmp(ob)
+    });
+
+    let mut buf = Vec::new();
+    for obj in &mut objs.0 {
+        let mode = if obj.path.is_dir() {
+            "40000"
+        } else if obj.path.is_symlink() {
+            "120000"
+        } else if obj.path.is_file() {
+            "100644"
+        } else {
+            // TODO: executable
+            "100755"
+        };
+        obj.mode = mode;
+        buf.extend_from_slice(obj.mode.as_bytes());
+        buf.extend_from_slice(" ".as_bytes());
+        buf.extend_from_slice(
+            obj.path
+                .file_name()
+                .expect("write file name")
+                .to_str()
+                .expect("osstr to str")
+                .as_bytes(),
+        );
+        buf.extend_from_slice("\0".as_bytes());
+        buf.extend_from_slice(hex::decode(obj.hash.clone()).unwrap().as_slice());
+    }
+    if print {
+        eprintln!("buf len {:?}/{},\n{}", dir, buf.len(), objs);
+    }
+
+    let mut data = vec![b't', b'r', b'e', b'e', b' '];
+    let mut size = Vec::from(buf.len().to_string());
+    data.append(&mut size);
+    data.push(b'\0');
+    data.append(&mut buf);
+    let mut hasher = Sha1::new();
+    hasher.update(&data);
+    let tree_hash = hasher.finalize();
+    let tree_hash = format!("{:x}", tree_hash);
+    if write {
+        write_object(&tree_hash, &buf).context("write to tree object")?;
+    }
+    Ok(tree_hash)
+}
+
+fn calc_blob_hash(filename: &Path, write: bool) -> Result<String, anyhow::Error> {
+    let mut hasher = Sha1::new();
+    let mut file = std::fs::read(filename).context("read file err")?;
+    let mut size = Vec::from(file.len().to_string());
+    let mut data = vec![b'b', b'l', b'o', b'b', b' '];
+    data.append(&mut size);
+    data.push(b'\0');
+    data.append(&mut file);
+    hasher.update(&data);
+    let blob_hash = hasher.finalize();
+    let blob_hash = format!("{:x}", blob_hash);
+    if write {
+        write_object(&blob_hash, &data).context("write to blob object")?;
+    }
+    Ok(blob_hash)
+}
+
+fn write_object(hash: &String, data: &[u8]) -> Result<(), anyhow::Error> {
+    let prefix = &hash[..2];
+    let path = &hash[2..];
+    let path = PathBuf::from(".git/objects").join(prefix).join(path);
+    let f = if std::fs::exists(&path)? {
+        std::fs::File::open(&path).context(format!("open file {:?}", path))?
+    } else {
+        let prefix = PathBuf::from(".git/objects").join(prefix);
+        std::fs::create_dir_all(&prefix)?;
+        std::fs::File::create(&path).context(format!("create file {:?}", path))?
+    };
+    let mut e = ZlibEncoder::new(f, Compression::fast());
+    e.write_all(&data).context("write object file error")
 }
