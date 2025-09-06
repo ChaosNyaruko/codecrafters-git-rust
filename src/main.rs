@@ -246,7 +246,7 @@ fn main() -> Result<(), anyhow::Error> {
             let commit_hash = hasher.finalize();
             let commit_hash = format!("{:x}", commit_hash);
             write_object(&commit_hash, &data)?;
-            println!("commit {}", commit_hash);
+            println!("{}", commit_hash);
         }
     }
 
