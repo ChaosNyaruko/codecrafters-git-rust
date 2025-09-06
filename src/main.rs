@@ -1,7 +1,6 @@
-use sha1::{Digest, Sha1};
 #[allow(unused_imports)]
-use std::env;
-use std::fs::{self, DirEntry};
+use sha1::{Digest, Sha1};
+use std::fs::{self};
 use std::{
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
@@ -32,7 +31,7 @@ enum Commands {
         object: String,
     },
     HashObject {
-        #[arg(short)]
+        #[arg(short = 'w')]
         write_object: bool,
 
         filename: String,
@@ -44,6 +43,15 @@ enum Commands {
         object: String,
     },
     WriteTree,
+    CommitTree {
+        tree_object: String,
+
+        #[arg(short = 'm')]
+        message: String,
+
+        #[arg(short = 'p')]
+        parent: String,
+    },
 }
 
 #[derive(Debug)]
@@ -202,6 +210,43 @@ fn main() -> Result<(), anyhow::Error> {
             //
             let hash = dir_hash(Path::new("."), true, true)?;
             println!("{hash}")
+        }
+        Commands::CommitTree {
+            tree_object,
+            message,
+            parent,
+        } => {
+            use chrono::Local;
+            use std::fmt::Write;
+
+            let now = Local::now();
+            let now = now.timestamp();
+            let mut commit = Vec::new();
+            writeln!(commit, "tree {}", tree_object)?;
+            writeln!(commit, "parent {}", parent,)?;
+            writeln!(
+                commit,
+                "author {} <cabbageparadise@gmail.com> {} {}",
+                "chaosnyaruko", now, "+0800",
+            )?;
+            writeln!(
+                commit,
+                "committer {} <cabbageparadise@gmail.com> {} {}",
+                "chaosnyaruko", now, "+0800",
+            )?;
+            write!(commit, "\n{message}")?;
+
+            let mut data = b"commit ".to_vec();
+            let mut size = Vec::from(commit.len().to_string());
+            data.append(&mut size);
+            data.push(b'\0');
+            data.append(&mut commit);
+            let mut hasher = Sha1::new();
+            hasher.update(&data);
+            let commit_hash = hasher.finalize();
+            let commit_hash = format!("{:x}", commit_hash);
+            write_object(&commit_hash, &data)?;
+            println!("commit {}", commit_hash);
         }
     }
 
