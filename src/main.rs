@@ -234,7 +234,7 @@ fn main() -> Result<(), anyhow::Error> {
                 "committer {} <cabbageparadise@gmail.com> {} {}",
                 "chaosnyaruko", now, "+0800",
             )?;
-            write!(commit, "\n{message}")?;
+            writeln!(commit, "\n{message}")?;
 
             let mut data = b"commit ".to_vec();
             let mut size = Vec::from(commit.len().to_string());
