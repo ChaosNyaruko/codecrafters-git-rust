@@ -62,3 +62,12 @@ mygit init
 ```sh
  python3 -c "import sys,zlib; sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))"
 ```
+
+
+# For the last big stage
+- https://git-scm.com/docs/protocol-common
+- https://i27ae15.github.io/git-protocol-doc/docs/git-protocol/pack-header
+- https://git-scm.com/docs/http-protocol
+- https://git-scm.com/docs/gitformat-pack
+- https://codewords.recurse.com/issues/three/unpacking-git-packfiles
+- https://medium.com/@concertdaw/sneaky-git-number-encoding-ddcc5db5329f
