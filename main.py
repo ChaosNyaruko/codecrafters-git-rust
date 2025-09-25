@@ -54,16 +54,18 @@ def decompress_file(file_path):
                         tname = "blob"
                     case 4:
                         tname = "tag"
-                obj = hashlib.sha1(tname.encode() + b' ' +  str(len(decompressed_data)).encode() + bytes([0]) +  decompressed_data).hexdigest()
+                commit = tname.encode() + b' ' +  str(len(decompressed_data)).encode() + bytes([0]) +  decompressed_data
+                obj = hashlib.sha1(commit).hexdigest()
                 print("obj",  tname, obj, decompressed_data[:1000])
-                idx[obj] = decompressed_data
+                idx[obj] = (tname, decompressed_data)
                 compressed_data = dobj.unused_data
             elif type_ == 7:
                 base = compressed_data[i+1:i+1+20].hex()
                 if base not in idx:
+                    # maybe the diff applied blob should also be 
                     eprint("base", base, "not found")
                     exit(69)
-                source = idx[base]
+                t, source = idx[base]
                 me = []
                 dobj = zlib.decompressobj()
                 data = compressed_data[i+1+20:]
@@ -142,7 +144,9 @@ def decompress_file(file_path):
                 assert j == size,  "j should end at exactly where the 'size' is"
                 # total copied size + total added size == dst size
                 assert len(me) == dst_size
-                print("me", me)
+                commit = t.encode() + b' ' +  str(len(me)).encode() + bytes([0]) +  bytes(me)
+                new_obj = hashlib.sha1(commit).hexdigest()
+                idx[new_obj] = (t, me)
                 compressed_data = dobj.unused_data
             else:
                 eprint("unsupported", type_)
