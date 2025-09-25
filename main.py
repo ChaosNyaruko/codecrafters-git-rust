@@ -17,6 +17,7 @@ def decompress_file(file_path):
     Returns:
         bytes: The decompressed data.
     """
+    idx = dict()
     try:
         with open(file_path, 'rb') as f:
             compressed_data = f.read()
@@ -53,16 +54,21 @@ def decompress_file(file_path):
                         tname = "blob"
                     case 4:
                         tname = "tag"
-                print(k, tname, "content", decompressed_data[:10])
+                obj = hashlib.sha1(tname.encode() + b' ' +  str(len(decompressed_data)).encode() + bytes([0]) +  decompressed_data).hexdigest()
+                print("obj",  tname, obj, decompressed_data[:1000])
+                idx[obj] = decompressed_data
                 compressed_data = dobj.unused_data
             elif type_ == 7:
                 base = compressed_data[i+1:i+1+20].hex()
-                print("base", base)
+                if base not in idx:
+                    eprint("base", base, "not found")
+                    exit(69)
+                source = idx[base]
+                me = []
                 dobj = zlib.decompressobj()
                 data = compressed_data[i+1+20:]
                 decompressed_data = dobj.decompress(data)
                 assert len(decompressed_data) == size, "the sizes of the decompressed_data should match"
-                print(k, "ref delta content", decompressed_data[:10])
                 j = 0
                 src_size = decompressed_data[j] & 0x7F
                 shift = 7
@@ -81,6 +87,7 @@ def decompress_file(file_path):
                     j+=1
                     shift += 7
                 print("dst sz", dst_size)
+                # assert len(source) == src_size
                 j += 1
                 while j < len(decompressed_data):
                     ins = "COPY" if decompressed_data[j]&0x80 != 0 else "ADD"
@@ -111,7 +118,6 @@ def decompress_file(file_path):
                             j += 1
                         print("copy offset", offset_)
 
-                        # TODO: we should parse offset first
                         size_ = 0
                         if s1:
                             size_ |= decompressed_data[j]
@@ -124,21 +130,26 @@ def decompress_file(file_path):
                             j += 1
 
                         print("copy size", size_)
+                        me.extend(source[offset_:offset_+size_])
                     else: # ins = ADD
                         add_size = decompressed_data[j] & 0x7F
                         j += 1
                         added = decompressed_data[j:j+add_size]
                         j += add_size
+                        me.extend(added)
                         print("ADD",  len(added), (added))
                 print("j ends at", j)
                 assert j == size,  "j should end at exactly where the 'size' is"
                 # total copied size + total added size == dst size
+                assert len(me) == dst_size
+                print("me", me)
                 compressed_data = dobj.unused_data
             else:
                 eprint("unsupported", type_)
                 exit(69)
         hash_object = hashlib.sha1(bak[8:-20])
         pbHash = hash_object.hexdigest()
+        print(idx.keys())
         assert compressed_data.hex() == pbHash, "checksum not match"
 
 
