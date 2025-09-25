@@ -82,29 +82,57 @@ def decompress_file(file_path):
                     shift += 7
                 print("dst sz", dst_size)
                 j += 1
-                print("rest", decompressed_data[j:], bin(decompressed_data[j]))
-                ins = "COPY" if decompressed_data[j]&0x80 != 0 else "ADD"
-                print(ins)
-                if ins == "COPY":
-                    size_to_copy = (decompressed_data[j]>>4)&0b0111
-                    s1 = size_to_copy&0b001
-                    s2 = size_to_copy&0b010
-                    s3 = size_to_copy&0b100
-                    offset_to_copy = (decompressed_data[j])&0b1111
-                    of1 = offset_to_copy&0b0001
-                    of2 = offset_to_copy&0b0010
-                    of3 = offset_to_copy&0b0100
-                    of4 = offset_to_copy&0b1000
-                    # TODO: we should parse offset first
-                    print(s1, s2, s3, of1, of2, of3, of4)
-                    size_bytes = (s1 != 0) + (s2 != 0) + (s3 != 0)
-                    print(size_bytes)
-                    size_ = decompressed_data[j+1:j+1+size_bytes]
-                    print(size_)
-                    size_ = struct.unpack("<H", size_)
-                    print(size_)
-                    j += 1 + size_bytes
-                exit(69)
+                while j < len(decompressed_data):
+                    ins = "COPY" if decompressed_data[j]&0x80 != 0 else "ADD"
+                    if ins == "COPY":
+                        size_to_copy = (decompressed_data[j]>>4)&0b0111
+                        s1 = size_to_copy&0b001
+                        s2 = size_to_copy&0b010
+                        s3 = size_to_copy&0b100
+                        offset_to_copy = (decompressed_data[j])&0b1111
+                        of1 = offset_to_copy&0b0001
+                        of2 = offset_to_copy&0b0010
+                        of3 = offset_to_copy&0b0100
+                        of4 = offset_to_copy&0b1000
+                        print(s1, s2, s3, of1, of2, of3, of4)
+                        j += 1
+                        offset_ = 0
+                        if of1:
+                            offset_ |= decompressed_data[j]
+                            j += 1
+                        if of2:
+                            offset_ |= decompressed_data[j] << 8
+                            j += 1
+                        if of3:
+                            offset_ |= decompressed_data[j] << 16
+                            j += 1
+                        if of4:
+                            offset_ |= decompressed_data[j] << 24
+                            j += 1
+                        print("copy offset", offset_)
+
+                        # TODO: we should parse offset first
+                        size_ = 0
+                        if s1:
+                            size_ |= decompressed_data[j]
+                            j += 1
+                        if s2:
+                            size_ |= decompressed_data[j] << 8
+                            j += 1
+                        if s3:
+                            size_ |= decompressed_data[j] << 16
+                            j += 1
+
+                        print("copy size", size_)
+                    else: # ins = ADD
+                        add_size = decompressed_data[j] & 0x7F
+                        j += 1
+                        added = decompressed_data[j:j+add_size]
+                        j += add_size
+                        print("ADD",  len(added), (added))
+                print("j ends at", j)
+                assert j == size,  "j should end at exactly where the 'size' is"
+                # total copied size + total added size == dst size
                 compressed_data = dobj.unused_data
             else:
                 eprint("unsupported", type_)
