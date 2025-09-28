@@ -65,9 +65,17 @@ mygit init
 
 
 # For the last big stage
+## Refs
 - https://git-scm.com/docs/protocol-common
 - https://i27ae15.github.io/git-protocol-doc/docs/git-protocol/pack-header
 - https://git-scm.com/docs/http-protocol
 - https://git-scm.com/docs/gitformat-pack
 - https://codewords.recurse.com/issues/three/unpacking-git-packfiles
 - https://medium.com/@concertdaw/sneaky-git-number-encoding-ddcc5db5329f
+- github.com/i27ae15/git
+
+## NOTES
+The real git is not storing every object on your disk.
+Even when you do git cat-file, you see it, it is not done by only trying to read the .git/objects/xx/xxxxxx, 
+it will also try to find it in the "pack", see "odb_read_object_info_extended" in the git source code for more
+

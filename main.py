@@ -153,7 +153,8 @@ def decompress_file(file_path):
                 exit(69)
         hash_object = hashlib.sha1(bak[8:-20])
         pbHash = hash_object.hexdigest()
-        print(idx.keys())
+        print(idx.keys(), len(idx.keys()))
+        assert len(idx.keys()) == object_num[0], "objs should all be in idx"
         assert compressed_data.hex() == pbHash, "checksum not match"
 
 
