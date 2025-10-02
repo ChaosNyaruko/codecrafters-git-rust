@@ -52,6 +52,10 @@ enum Commands {
         #[arg(short = 'p')]
         parent: String,
     },
+    Clone {
+        git_url: String,
+        dir: String,
+    },
 }
 
 #[derive(Debug)]
@@ -248,9 +252,43 @@ fn main() -> Result<(), anyhow::Error> {
             write_object(&commit_hash, &data)?;
             println!("{}", commit_hash);
         }
+        Commands::Clone { git_url, dir } => {
+            let git_url = git_url.to_owned() + "/info/refs?service=git-upload-pack";
+
+            // TODO: rewrite it in an "await" way
+            let mut resp = reqwest::blocking::get(&git_url)?;
+
+            let status = resp.status();
+            assert!(status == 200 || status == 304);
+            if status == 304 {
+                anyhow::bail!("not got a valid service response");
+            }
+
+            let mut body = Vec::new();
+            resp.copy_to(&mut body)?;
+            let mut offset = 0;
+            while offset < body.len() {
+                let line = read_pkt_line(&body, &mut offset)?;
+                eprint!("{}", str::from_utf8(line)?);
+            }
+            assert_eq!(offset, body.len());
+        }
     }
 
     Ok(())
+}
+
+fn read_pkt_line<'a>(buf: &'a [u8], offset: &mut usize) -> Result<&'a [u8], anyhow::Error> {
+    let len = &buf[*offset..*offset + 4];
+    *offset += 4;
+    let len = usize::from_str_radix(str::from_utf8(len)?, 16)?;
+    if len == 0 {
+        // for "0000"
+        return Ok(b"");
+    }
+    let res = &buf[*offset..*offset + len - 4];
+    *offset += len - 4;
+    Ok(res)
 }
 
 struct Objects(Vec<Object>);
