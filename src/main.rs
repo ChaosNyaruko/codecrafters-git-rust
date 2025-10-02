@@ -253,10 +253,11 @@ fn main() -> Result<(), anyhow::Error> {
             println!("{}", commit_hash);
         }
         Commands::Clone { git_url, dir } => {
-            let git_url = git_url.to_owned() + "/info/refs?service=git-upload-pack";
+            let info_git_url = git_url.to_owned() + "/info/refs?service=git-upload-pack";
 
             // TODO: rewrite it in an "await" way
-            let mut resp = reqwest::blocking::get(&git_url)?;
+            /*
+            let mut resp = reqwest::blocking::get(&info_git_url)?;
 
             let status = resp.status();
             assert!(status == 200 || status == 304);
@@ -267,15 +268,67 @@ fn main() -> Result<(), anyhow::Error> {
             let mut body = Vec::new();
             resp.copy_to(&mut body)?;
             let mut offset = 0;
+
+            let mut head = String::new();
             while offset < body.len() {
                 let line = read_pkt_line(&body, &mut offset)?;
                 eprint!("{}", str::from_utf8(line)?);
+                let mut s = line.split(|c| *c == b' ' || *c == b'\0');
+                if let Some(h) = s.next() {
+                    if let Some(pointer) = s.next() {
+                        let pointer = str::from_utf8(pointer)?;
+                        if pointer == "HEAD" {
+                            head = String::from_utf8(h.to_vec())?;
+                            break;
+                        }
+                    }
+                }
             }
-            assert_eq!(offset, body.len());
+            */
+            let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
+            eprintln!("{head}");
+            assert_eq!(head.len(), 40);
+            let pack_git_url = git_url.to_owned() + "/git-upload-pack";
+            // '0032want 42ef8cfdd14525539c47310fa2d83bcfe73b7ee4\n00000009done\n'
+            let want = format!("want {head}\n");
+            let want = create_pkt_line(want.as_bytes());
+            let flush = create_pkt_line(b"");
+            let done = create_pkt_line(b"done\n");
+
+            let mut body = Vec::with_capacity(want.len() + flush.len() + done.len());
+            body.extend_from_slice(&want);
+            body.extend_from_slice(&flush);
+            body.extend_from_slice(&done);
+
+            use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/x-git-upload-pack-request"),
+            );
+            let client = reqwest::blocking::Client::new();
+            let mut resp = client
+                .post(&pack_git_url)
+                .headers(headers)
+                .body(body.clone())
+                .send()?;
+            eprintln!("{pack_git_url}, body{:?}, {}", &body, resp.status());
+
+            resp.copy_to(&mut std::io::stdout())
+                .context("write to stdout")?;
         }
     }
 
     Ok(())
+}
+
+fn create_pkt_line(s: &[u8]) -> Vec<u8> {
+    let len = if s.len() == 0 { 0 } else { s.len() + 4 };
+    let len = format!("{len:04x}");
+    eprintln!("{len}");
+    let mut res = len.bytes().collect::<Vec<u8>>();
+    res.extend(s);
+    return res;
 }
 
 fn read_pkt_line<'a>(buf: &'a [u8], offset: &mut usize) -> Result<&'a [u8], anyhow::Error> {
