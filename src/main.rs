@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use sha1::{Digest, Sha1};
+use std::collections::{self, HashMap};
 use std::fs::{self};
 use std::{
     io::{BufRead, Read, Write},
@@ -178,6 +179,60 @@ impl GitObject {
     }
 }
 
+#[derive(Default)]
+struct BaseRef {
+    content: Vec<u8>,
+    otype: u8,
+}
+
+impl BaseRef {
+    fn new(content: &[u8], otype: u8) -> Self {
+        BaseRef {
+            content: content.to_vec(),
+            otype,
+        }
+    }
+}
+
+fn decode_size(buf: &[u8], i: &mut usize, offset_mode: bool) -> usize {
+    let mut size = buf[*i] as usize & (if !offset_mode { 0x0f } else { 0x7f });
+    let mut shift = 4;
+    if offset_mode {
+        shift = 7;
+    }
+    while buf[*i] & 0x80 != 0 {
+        let b = buf[*i + 1] as usize;
+        size |= (b & 0x7F) << shift;
+        *i += 1;
+        shift += 7;
+    }
+    *i += 1;
+    size
+}
+
+fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &mut Vec<u8>) {
+    let header = match otype {
+        1 => "commit ",
+        2 => "tree ",
+        3 => "blob ",
+        _ => {
+            unimplemented!("we don't know how to deal with other types: {}", otype);
+        }
+    };
+    let mut obj = header.as_bytes().to_vec();
+    let mut size = Vec::from(size.to_string());
+    obj.append(&mut size);
+    obj.push(b'\0');
+    obj.extend_from_slice(&data);
+    let mut hasher = Sha1::new();
+    hasher.update(&obj);
+    let obj_hash = hasher.finalize();
+    let obj_hash = format!("{:x}", obj_hash);
+    eprintln!("{obj_hash}");
+
+    idx.insert(obj_hash, BaseRef::new(&data, otype));
+}
+
 fn main() -> Result<(), anyhow::Error> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
@@ -339,23 +394,16 @@ fn main() -> Result<(), anyhow::Error> {
             offset += 12;
 
             let mut buf = &ori_buf[offset..];
+
+            let mut idx = collections::HashMap::<String, BaseRef>::new();
             for k in 0..object_num {
                 let mut i = 0;
                 let otype = (buf[i] >> 4) & 0x07;
-                let mut size = buf[i] as usize & 0x0f;
-                let mut shift = 4;
-                while buf[i] & 0x80 != 0 {
-                    let b = buf[i + 1] as usize;
-                    size |= (b & 0x7F) << shift;
-                    i += 1;
-                    shift += 7;
-                }
-                eprintln!("type: {}, size: {}", otype, size);
-                i += 1;
-                buf = &buf[i..];
+                let size = decode_size(&buf, &mut i, false);
+                eprintln!("k:{k} type: {}, size: {}", otype, size);
                 match otype {
                     1 | 2 | 3 | 4 => {
-                        let mut z = ZlibDecoder::new(buf);
+                        let mut z = ZlibDecoder::new(&buf[i..]);
                         let mut data = Vec::new();
                         let read_size = z
                             .read_to_end(&mut data)
@@ -365,10 +413,114 @@ fn main() -> Result<(), anyhow::Error> {
                         assert_eq!(data.len(), size);
                         assert_eq!(read_size, size);
                         assert_eq!(read_size, out as usize);
-                        // eprintln!("{}", str::from_utf8(&data)?);
-                        buf = &buf[inb as usize..];
+                        buf = &buf[i + inb as usize..];
+
+                        store_idx(&mut idx, otype, size, &mut data);
                     }
-                    6 | 7 => {
+                    7 => {
+                        let base_ref = hex::encode(&buf[i..i + 20]);
+                        let base = idx.get(&base_ref);
+                        if base.is_none() {
+                            anyhow::bail!("base {} not found", base_ref);
+                        }
+                        let base = base.unwrap();
+                        i += 20;
+                        let mut z = ZlibDecoder::new(&buf[i..]);
+                        let mut data = Vec::new();
+                        z.read_to_end(&mut data).context("decompress ref delta")?;
+                        let inb = z.total_in();
+                        assert_eq!(data.len(), size);
+                        let mut j = 0;
+                        let src_size = decode_size(&data, &mut j, true);
+                        let dst_size = decode_size(&data, &mut j, true);
+                        let mut new_dst = Vec::<u8>::with_capacity(dst_size);
+                        eprintln!("xx {src_size}, {dst_size}");
+                        while j < data.len() {
+                            let ins = if data[j] & 0x80 != 0 { "COPY" } else { "ADD" };
+                            if ins == "COPY" {
+                                let size_to_copy = (data[j] >> 4) & 0b0111;
+                                let s1 = size_to_copy & 0b001 != 0;
+                                let s2 = size_to_copy & 0b010 != 0;
+                                let s3 = size_to_copy & 0b100 != 0;
+                                let offset_to_copy = (data[j]) & 0b1111;
+                                let of1 = offset_to_copy & 0b0001 != 0;
+                                let of2 = offset_to_copy & 0b0010 != 0;
+                                let of3 = offset_to_copy & 0b0100 != 0;
+                                let of4 = offset_to_copy & 0b1000 != 0;
+                                j += 1;
+                                let mut start: usize = 0;
+                                if of1 {
+                                    start |= (data[j]) as usize;
+                                    j += 1;
+                                }
+                                if of2 {
+                                    start |= (data[j] as usize) << 8;
+                                    j += 1;
+                                }
+                                if of3 {
+                                    start |= (data[j] as usize) << 16;
+                                    j += 1;
+                                }
+                                if of4 {
+                                    start |= (data[j] as usize) << 24;
+                                    j += 1;
+                                }
+
+                                let mut size: usize = 0;
+                                if s1 {
+                                    size |= data[j] as usize;
+                                    j += 1;
+                                }
+                                if s2 {
+                                    size |= (data[j] as usize) << 8;
+                                    j += 1;
+                                }
+                                if s3 {
+                                    size |= (data[j] as usize) << 16;
+                                    j += 1;
+                                }
+                                eprintln!("start:{}, size:{}", start, size);
+
+                                new_dst.extend_from_slice(&base.content[start..start + size]);
+                            } else {
+                                // if ins == "ADD"
+                                let add_size: usize = (data[j] as usize) & 0x7F;
+                                j += 1;
+                                let added = &data[j..j + add_size];
+                                j += add_size;
+                                new_dst.extend_from_slice(added);
+                            }
+                        }
+                        assert_eq!(j, data.len());
+                        assert_eq!(new_dst.len(), dst_size);
+                        // TODO: why can't i wrap it in "store_idx"
+                        // store_idx(&mut idx, base.otype, dst_size, &mut new_dst);
+                        let header = match base.otype {
+                            1 => "commit ",
+                            2 => "tree ",
+                            3 => "blob ",
+                            _ => {
+                                unimplemented!(
+                                    "we don't know how to deal with other types: {}",
+                                    base.otype
+                                );
+                            }
+                        };
+                        let mut obj = header.as_bytes().to_vec();
+                        let size = Vec::from(dst_size.to_string());
+                        obj.extend_from_slice(&size);
+                        obj.push(b'\0');
+                        obj.extend_from_slice(&new_dst);
+                        let mut hasher = Sha1::new();
+                        hasher.update(&obj);
+                        let obj_hash = hasher.finalize();
+                        let obj_hash = format!("{:x}", obj_hash);
+                        eprintln!("{obj_hash}");
+
+                        idx.insert(obj_hash, BaseRef::new(&new_dst, base.otype));
+                        buf = &buf[i + inb as usize..];
+                    }
+                    6 => {
                         unimplemented!("{}", otype);
                     }
                     unknown => {
