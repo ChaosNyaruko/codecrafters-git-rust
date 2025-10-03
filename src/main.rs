@@ -210,7 +210,7 @@ fn decode_size(buf: &[u8], i: &mut usize, offset_mode: bool) -> usize {
     size
 }
 
-fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &mut Vec<u8>) {
+fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &Vec<u8>) {
     let header = match otype {
         1 => "commit ",
         2 => "tree ",
@@ -220,8 +220,8 @@ fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &
         }
     };
     let mut obj = header.as_bytes().to_vec();
-    let mut size = Vec::from(size.to_string());
-    obj.append(&mut size);
+    let size = Vec::from(size.to_string());
+    obj.extend_from_slice(&size);
     obj.push(b'\0');
     obj.extend_from_slice(&data);
     let mut hasher = Sha1::new();
@@ -419,11 +419,18 @@ fn main() -> Result<(), anyhow::Error> {
                     }
                     7 => {
                         let base_ref = hex::encode(&buf[i..i + 20]);
+                        // NOTE: perf: Why the {} and copy?
+                        // https://stackoverflow.com/questions/47618823/cannot-borrow-as-mutable-because-it-is-also-borrowed-as-immutable
+                        // lexical lifetime https://stackoverflow.com/questions/50251487/what-are-non-lexical-lifetimes
+                        let base_content;
+                        let b_type;
                         let base = idx.get(&base_ref);
                         if base.is_none() {
                             anyhow::bail!("base {} not found", base_ref);
                         }
                         let base = base.unwrap();
+                        base_content = base.content.clone();
+                        b_type = base.otype;
                         i += 20;
                         let mut z = ZlibDecoder::new(&buf[i..]);
                         let mut data = Vec::new();
@@ -481,7 +488,7 @@ fn main() -> Result<(), anyhow::Error> {
                                 }
                                 eprintln!("start:{}, size:{}", start, size);
 
-                                new_dst.extend_from_slice(&base.content[start..start + size]);
+                                new_dst.extend_from_slice(&base_content[start..start + size]);
                             } else {
                                 // if ins == "ADD"
                                 let add_size: usize = (data[j] as usize) & 0x7F;
@@ -493,31 +500,7 @@ fn main() -> Result<(), anyhow::Error> {
                         }
                         assert_eq!(j, data.len());
                         assert_eq!(new_dst.len(), dst_size);
-                        // TODO: why can't i wrap it in "store_idx"
-                        // store_idx(&mut idx, base.otype, dst_size, &mut new_dst);
-                        let header = match base.otype {
-                            1 => "commit ",
-                            2 => "tree ",
-                            3 => "blob ",
-                            _ => {
-                                unimplemented!(
-                                    "we don't know how to deal with other types: {}",
-                                    base.otype
-                                );
-                            }
-                        };
-                        let mut obj = header.as_bytes().to_vec();
-                        let size = Vec::from(dst_size.to_string());
-                        obj.extend_from_slice(&size);
-                        obj.push(b'\0');
-                        obj.extend_from_slice(&new_dst);
-                        let mut hasher = Sha1::new();
-                        hasher.update(&obj);
-                        let obj_hash = hasher.finalize();
-                        let obj_hash = format!("{:x}", obj_hash);
-                        eprintln!("{obj_hash}");
-
-                        idx.insert(obj_hash, BaseRef::new(&new_dst, base.otype));
+                        store_idx(&mut idx, b_type, dst_size, &mut new_dst);
                         buf = &buf[i + inb as usize..];
                     }
                     6 => {
