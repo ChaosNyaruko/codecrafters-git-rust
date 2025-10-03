@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use sha1::{Digest, Sha1};
 use std::collections::{self, HashMap};
+use std::fmt::format;
 use std::fs::{self};
 use std::{
     io::{BufRead, Read, Write},
@@ -348,7 +349,6 @@ fn main() -> Result<(), anyhow::Error> {
                         }
                     }
                 }
-                let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
                 eprintln!("{head}");
                 assert_eq!(head.len(), 40);
                 let pack_git_url = git_url.to_owned() + "/git-upload-pack";
@@ -380,6 +380,7 @@ fn main() -> Result<(), anyhow::Error> {
                     .context("write to stdout")?;
             }
             let mut offset = 0;
+            let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
             let ori_buf = std::fs::read("server2.log").context("read packfile err")?;
             let nak = read_pkt_line(&ori_buf, &mut offset)?;
             eprintln!("{}", str::from_utf8(nak)?);
@@ -414,7 +415,6 @@ fn main() -> Result<(), anyhow::Error> {
                         assert_eq!(read_size, size);
                         assert_eq!(read_size, out as usize);
                         buf = &buf[i + inb as usize..];
-
                         store_idx(&mut idx, otype, size, &mut data);
                     }
                     7 => {
@@ -511,6 +511,14 @@ fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
+            let mut hasher = Sha1::new();
+            hasher.update(&ori_buf[8..ori_buf.len() - 20]);
+            let hash = hasher.finalize();
+            let hash = format!("{hash:x}");
+            assert_eq!(buf.len(), 20);
+            let expected_hash = hex::encode(buf);
+            assert_eq!(hash, expected_hash);
+            assert_eq!(idx.len(), object_num as usize);
         }
     }
 
