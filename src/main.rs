@@ -58,6 +58,16 @@ enum Commands {
     },
 }
 
+#[repr(u8)]
+enum PackObjType {
+    Commit = 1,
+    Tree,
+    Blob,
+    Tag,
+    OfsDelta,
+    RefDelta,
+}
+
 #[derive(Debug)]
 enum ObjectType {
     Blob,
@@ -254,68 +264,118 @@ fn main() -> Result<(), anyhow::Error> {
         }
         Commands::Clone { git_url, dir } => {
             let info_git_url = git_url.to_owned() + "/info/refs?service=git-upload-pack";
+            if false {
+                // TODO: rewrite it in an "await" way
+                let mut resp = reqwest::blocking::get(&info_git_url)?;
 
-            // TODO: rewrite it in an "await" way
-            /*
-            let mut resp = reqwest::blocking::get(&info_git_url)?;
+                let status = resp.status();
+                assert!(status == 200 || status == 304);
+                if status == 304 {
+                    anyhow::bail!("not got a valid service response");
+                }
 
-            let status = resp.status();
-            assert!(status == 200 || status == 304);
-            if status == 304 {
-                anyhow::bail!("not got a valid service response");
-            }
+                let mut body = Vec::new();
+                resp.copy_to(&mut body)?;
+                let mut offset = 0;
 
-            let mut body = Vec::new();
-            resp.copy_to(&mut body)?;
-            let mut offset = 0;
-
-            let mut head = String::new();
-            while offset < body.len() {
-                let line = read_pkt_line(&body, &mut offset)?;
-                eprint!("{}", str::from_utf8(line)?);
-                let mut s = line.split(|c| *c == b' ' || *c == b'\0');
-                if let Some(h) = s.next() {
-                    if let Some(pointer) = s.next() {
-                        let pointer = str::from_utf8(pointer)?;
-                        if pointer == "HEAD" {
-                            head = String::from_utf8(h.to_vec())?;
-                            break;
+                let mut head = String::new();
+                while offset < body.len() {
+                    let line = read_pkt_line(&body, &mut offset)?;
+                    eprint!("{}", str::from_utf8(line)?);
+                    let mut s = line.split(|c| *c == b' ' || *c == b'\0');
+                    if let Some(h) = s.next() {
+                        if let Some(pointer) = s.next() {
+                            let pointer = str::from_utf8(pointer)?;
+                            if pointer == "HEAD" {
+                                head = String::from_utf8(h.to_vec())?;
+                                break;
+                            }
                         }
                     }
                 }
+                let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
+                eprintln!("{head}");
+                assert_eq!(head.len(), 40);
+                let pack_git_url = git_url.to_owned() + "/git-upload-pack";
+                let want = format!("want {head}\n");
+                let want = create_pkt_line(want.as_bytes());
+                let flush = create_pkt_line(b"");
+                let done = create_pkt_line(b"done\n");
+
+                let mut body = Vec::with_capacity(want.len() + flush.len() + done.len());
+                body.extend_from_slice(&want);
+                body.extend_from_slice(&flush);
+                body.extend_from_slice(&done);
+
+                use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/x-git-upload-pack-request"),
+                );
+                let client = reqwest::blocking::Client::new();
+                let mut resp = client
+                    .post(&pack_git_url)
+                    .headers(headers)
+                    .body(body.clone())
+                    .send()?;
+                eprintln!("{pack_git_url}, body{:?}, {}", &body, resp.status());
+
+                resp.copy_to(&mut std::io::stdout())
+                    .context("write to stdout")?;
             }
-            */
-            let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
-            eprintln!("{head}");
-            assert_eq!(head.len(), 40);
-            let pack_git_url = git_url.to_owned() + "/git-upload-pack";
-            // '0032want 42ef8cfdd14525539c47310fa2d83bcfe73b7ee4\n00000009done\n'
-            let want = format!("want {head}\n");
-            let want = create_pkt_line(want.as_bytes());
-            let flush = create_pkt_line(b"");
-            let done = create_pkt_line(b"done\n");
+            let mut offset = 0;
+            let ori_buf = std::fs::read("server2.log").context("read packfile err")?;
+            let nak = read_pkt_line(&ori_buf, &mut offset)?;
+            eprintln!("{}", str::from_utf8(nak)?);
 
-            let mut body = Vec::with_capacity(want.len() + flush.len() + done.len());
-            body.extend_from_slice(&want);
-            body.extend_from_slice(&flush);
-            body.extend_from_slice(&done);
+            let sig = &ori_buf[offset..offset + 4];
+            eprintln!("{sig:?}");
+            let version = &ori_buf[offset + 4..offset + 8];
+            eprintln!("{version:?}");
+            let object_num = &ori_buf[offset + 8..offset + 12];
+            let object_num = u32::from_be_bytes(object_num.try_into()?);
+            eprintln!("{object_num:?}");
+            offset += 12;
 
-            use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/x-git-upload-pack-request"),
-            );
-            let client = reqwest::blocking::Client::new();
-            let mut resp = client
-                .post(&pack_git_url)
-                .headers(headers)
-                .body(body.clone())
-                .send()?;
-            eprintln!("{pack_git_url}, body{:?}, {}", &body, resp.status());
-
-            resp.copy_to(&mut std::io::stdout())
-                .context("write to stdout")?;
+            let mut buf = &ori_buf[offset..];
+            for k in 0..object_num {
+                let mut i = 0;
+                let otype = (buf[i] >> 4) & 0x07;
+                let mut size = buf[i] as usize & 0x0f;
+                let mut shift = 4;
+                while buf[i] & 0x80 != 0 {
+                    let b = buf[i + 1] as usize;
+                    size |= (b & 0x7F) << shift;
+                    i += 1;
+                    shift += 7;
+                }
+                eprintln!("type: {}, size: {}", otype, size);
+                i += 1;
+                buf = &buf[i..];
+                match otype {
+                    1 | 2 | 3 | 4 => {
+                        let mut z = ZlibDecoder::new(buf);
+                        let mut data = Vec::new();
+                        let read_size = z
+                            .read_to_end(&mut data)
+                            .context("decompress a normal object")?;
+                        let inb = z.total_in();
+                        let out = z.total_out();
+                        assert_eq!(data.len(), size);
+                        assert_eq!(read_size, size);
+                        assert_eq!(read_size, out as usize);
+                        // eprintln!("{}", str::from_utf8(&data)?);
+                        buf = &buf[inb as usize..];
+                    }
+                    6 | 7 => {
+                        unimplemented!("{}", otype);
+                    }
+                    unknown => {
+                        unreachable!("unknown object type {unknown}")
+                    }
+                }
+            }
         }
     }
 

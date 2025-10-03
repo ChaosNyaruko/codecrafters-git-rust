@@ -62,3 +62,7 @@ mygit init
 ```sh
  python3 -c "import sys,zlib; sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))"
 ```
+
+# Refs
+- bad doc: https://stackoverflow.com/questions/68062812/what-does-the-git-smart-https-protocol-fully-look-like-in-all-its-glory
+- about [size coding](https://git-scm.com/docs/gitformat-pack#_size_encoding)
