@@ -211,7 +211,13 @@ fn decode_size(buf: &[u8], i: &mut usize, offset_mode: bool) -> usize {
     size
 }
 
-fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &Vec<u8>) {
+fn store_idx(
+    idx: &mut HashMap<String, BaseRef>,
+    otype: u8,
+    size: usize,
+    data: &Vec<u8>,
+    dir: &Path,
+) {
     let header = match otype {
         1 => "commit ",
         2 => "tree ",
@@ -231,7 +237,23 @@ fn store_idx(idx: &mut HashMap<String, BaseRef>, otype: u8, size: usize, data: &
     let obj_hash = format!("{:x}", obj_hash);
     eprintln!("{obj_hash}");
 
-    idx.insert(obj_hash, BaseRef::new(&data, otype));
+    idx.insert(obj_hash.clone(), BaseRef::new(&data, otype));
+
+    write_object(dir, &obj_hash, &obj);
+}
+
+fn init_git_repo(path: &Path) -> Result<(), anyhow::Error> {
+    fs::create_dir_all(path.join(".git"))?;
+    fs::create_dir_all(path.join(".git/objects"))?;
+    fs::create_dir_all(path.join(".git/refs"))?;
+    fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+    Ok(())
+}
+
+fn set_head_to_ref(path: &Path, head: &str) -> Result<(), anyhow::Error> {
+    fs::create_dir_all(path.join(".git/refs/heads")).context("create .git/refs/heads")?;
+    fs::write(path.join(".git/refs/heads/main"), head)?;
+    Ok(())
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -241,10 +263,7 @@ fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
     match &cli.command {
         Commands::Init => {
-            fs::create_dir(".git")?;
-            fs::create_dir(".git/objects")?;
-            fs::create_dir(".git/refs")?;
-            fs::write(".git/HEAD", "ref: refs/heads/main\n")?;
+            init_git_repo(Path::new("."))?;
             println!("Initialized git directory")
         }
         Commands::CatFile {
@@ -315,73 +334,78 @@ fn main() -> Result<(), anyhow::Error> {
             hasher.update(&data);
             let commit_hash = hasher.finalize();
             let commit_hash = format!("{:x}", commit_hash);
-            write_object(&commit_hash, &data)?;
+            write_object(&std::path::absolute(".")?, &commit_hash, &data)?;
             println!("{}", commit_hash);
         }
         Commands::Clone { git_url, dir } => {
+            let dir = std::path::absolute(dir).context("absolute path for dir")?;
+            if std::fs::exists(&dir).context("exist")? {
+                anyhow::bail!(
+                    "destination path '{dir:?}' already exists and is not an empty directory."
+                );
+            }
+            init_git_repo(&dir).context("create .git in git clone")?;
+
             let info_git_url = git_url.to_owned() + "/info/refs?service=git-upload-pack";
-            if false {
-                // TODO: rewrite it in an "await" way
-                let mut resp = reqwest::blocking::get(&info_git_url)?;
+            // TODO: rewrite it in an "await" way
+            let mut resp = reqwest::blocking::get(&info_git_url)?;
 
-                let status = resp.status();
-                assert!(status == 200 || status == 304);
-                if status == 304 {
-                    anyhow::bail!("not got a valid service response");
-                }
+            let status = resp.status();
+            assert!(status == 200 || status == 304);
+            if status == 304 {
+                anyhow::bail!("not got a valid service response");
+            }
 
-                let mut body = Vec::new();
-                resp.copy_to(&mut body)?;
-                let mut offset = 0;
+            let mut body = Vec::new();
+            resp.copy_to(&mut body)?;
+            let mut offset = 0;
 
-                let mut head = String::new();
-                while offset < body.len() {
-                    let line = read_pkt_line(&body, &mut offset)?;
-                    eprint!("{}", str::from_utf8(line)?);
-                    let mut s = line.split(|c| *c == b' ' || *c == b'\0');
-                    if let Some(h) = s.next() {
-                        if let Some(pointer) = s.next() {
-                            let pointer = str::from_utf8(pointer)?;
-                            if pointer == "HEAD" {
-                                head = String::from_utf8(h.to_vec())?;
-                                break;
-                            }
+            let mut head = String::new();
+            while offset < body.len() {
+                let line = read_pkt_line(&body, &mut offset)?;
+                let mut s = line.split(|c| *c == b' ' || *c == b'\0');
+                if let Some(h) = s.next() {
+                    if let Some(pointer) = s.next() {
+                        let pointer = str::from_utf8(pointer)?;
+                        if pointer == "HEAD" {
+                            head = String::from_utf8(h.to_vec())?;
+                            break;
                         }
                     }
                 }
-                eprintln!("{head}");
-                assert_eq!(head.len(), 40);
-                let pack_git_url = git_url.to_owned() + "/git-upload-pack";
-                let want = format!("want {head}\n");
-                let want = create_pkt_line(want.as_bytes());
-                let flush = create_pkt_line(b"");
-                let done = create_pkt_line(b"done\n");
-
-                let mut body = Vec::with_capacity(want.len() + flush.len() + done.len());
-                body.extend_from_slice(&want);
-                body.extend_from_slice(&flush);
-                body.extend_from_slice(&done);
-
-                use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    CONTENT_TYPE,
-                    HeaderValue::from_static("application/x-git-upload-pack-request"),
-                );
-                let client = reqwest::blocking::Client::new();
-                let mut resp = client
-                    .post(&pack_git_url)
-                    .headers(headers)
-                    .body(body.clone())
-                    .send()?;
-                eprintln!("{pack_git_url}, body{:?}, {}", &body, resp.status());
-
-                resp.copy_to(&mut std::io::stdout())
-                    .context("write to stdout")?;
             }
+            eprintln!("head: {head}");
+            assert_eq!(head.len(), 40);
+            set_head_to_ref(&dir, &head)?;
+            let pack_git_url = git_url.to_owned() + "/git-upload-pack";
+            let want = format!("want {head}\n");
+            let want = create_pkt_line(want.as_bytes());
+            let flush = create_pkt_line(b"");
+            let done = create_pkt_line(b"done\n");
+
+            let mut body = Vec::with_capacity(want.len() + flush.len() + done.len());
+            body.extend_from_slice(&want);
+            body.extend_from_slice(&flush);
+            body.extend_from_slice(&done);
+
+            use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/x-git-upload-pack-request"),
+            );
+            let client = reqwest::blocking::Client::new();
+            let mut resp = client
+                .post(&pack_git_url)
+                .headers(headers)
+                .body(body.clone())
+                .send()?;
+            eprintln!("cloning...");
+
+            let mut ori_buf = Vec::new();
+            resp.copy_to(&mut ori_buf).context("write to stdout")?;
             let mut offset = 0;
-            let head = "42ef8cfdd14525539c47310fa2d83bcfe73b7ee4";
-            let ori_buf = std::fs::read("server2.log").context("read packfile err")?;
+            set_head_to_ref(&dir, &head)?;
             let nak = read_pkt_line(&ori_buf, &mut offset)?;
             eprintln!("{}", str::from_utf8(nak)?);
 
@@ -415,7 +439,7 @@ fn main() -> Result<(), anyhow::Error> {
                         assert_eq!(read_size, size);
                         assert_eq!(read_size, out as usize);
                         buf = &buf[i + inb as usize..];
-                        store_idx(&mut idx, otype, size, &mut data);
+                        store_idx(&mut idx, otype, size, &mut data, &dir);
                     }
                     7 => {
                         let base_ref = hex::encode(&buf[i..i + 20]);
@@ -441,7 +465,6 @@ fn main() -> Result<(), anyhow::Error> {
                         let src_size = decode_size(&data, &mut j, true);
                         let dst_size = decode_size(&data, &mut j, true);
                         let mut new_dst = Vec::<u8>::with_capacity(dst_size);
-                        eprintln!("xx {src_size}, {dst_size}");
                         while j < data.len() {
                             let ins = if data[j] & 0x80 != 0 { "COPY" } else { "ADD" };
                             if ins == "COPY" {
@@ -486,8 +509,6 @@ fn main() -> Result<(), anyhow::Error> {
                                     size |= (data[j] as usize) << 16;
                                     j += 1;
                                 }
-                                eprintln!("start:{}, size:{}", start, size);
-
                                 new_dst.extend_from_slice(&base_content[start..start + size]);
                             } else {
                                 // if ins == "ADD"
@@ -500,7 +521,7 @@ fn main() -> Result<(), anyhow::Error> {
                         }
                         assert_eq!(j, data.len());
                         assert_eq!(new_dst.len(), dst_size);
-                        store_idx(&mut idx, b_type, dst_size, &mut new_dst);
+                        store_idx(&mut idx, b_type, dst_size, &mut new_dst, &dir);
                         buf = &buf[i + inb as usize..];
                     }
                     6 => {
@@ -519,16 +540,86 @@ fn main() -> Result<(), anyhow::Error> {
             let expected_hash = hex::encode(buf);
             assert_eq!(hash, expected_hash);
             assert_eq!(idx.len(), object_num as usize);
+
+            let tree = tree_from_commit(&idx, &head)?;
+            checkout_files_by_tree(&idx, &tree, Path::new(&dir))?;
         }
     }
 
     Ok(())
 }
 
+fn tree_from_commit(idx: &HashMap<String, BaseRef>, head: &str) -> Result<String, anyhow::Error> {
+    let commit = idx.get(head).unwrap();
+    if commit.otype != 1 {
+        return Err(anyhow::anyhow!("HEAD should be a commit"));
+    }
+    let mut lines = commit.content.split(|c| *c == b'\n');
+    let tree = lines.next().unwrap();
+    assert_eq!(str::from_utf8(&tree[..5])?, "tree ");
+    let tree = str::from_utf8(&tree[5..])?;
+    Ok(tree.to_string())
+}
+
+fn checkout_files_by_tree(
+    idx: &HashMap<String, BaseRef>,
+    root_hash: &str,
+    path: &Path,
+) -> Result<(), anyhow::Error> {
+    let obj = idx.get(root_hash).unwrap();
+    match obj.otype {
+        3 => {
+            fs::write(path, &obj.content)?;
+        }
+        2 => {
+            // TODO: refactor(duplicate code with LsTree)
+            std::fs::create_dir_all(path).context(format!("create {:?}", path))?;
+            let mut i = 0;
+            loop {
+                let mut mode = Vec::with_capacity(6);
+                while i < obj.content.len() {
+                    let c = obj.content[i];
+                    i += 1;
+                    if c == b' ' {
+                        break;
+                    }
+                    mode.push(c);
+                }
+                // TODO: set the right permission for checked-out files.
+                let mode = format!("{:0>6}", str::from_utf8(&mode)?);
+
+                let mut name = Vec::new();
+                while i < obj.content.len() {
+                    let c = obj.content[i];
+                    i += 1;
+                    if c == b'\0' {
+                        break;
+                    }
+                    name.push(c);
+                }
+                let name = str::from_utf8(&name)?;
+
+                let hash = &obj.content[i..i + 20];
+                let hash = hex::encode(hash);
+                i += 20;
+                eprintln!("{name}, {mode}, {hash}");
+                checkout_files_by_tree(idx, &hash, &path.join(name))?;
+                if i >= obj.content.len() {
+                    break;
+                }
+            }
+            assert_eq!(i, obj.content.len());
+        }
+        bad => {
+            return Err(anyhow::anyhow!("we don't know how to checkout {bad}"));
+        }
+    }
+    Ok(())
+}
+
 fn create_pkt_line(s: &[u8]) -> Vec<u8> {
     let len = if s.len() == 0 { 0 } else { s.len() + 4 };
     let len = format!("{len:04x}");
-    eprintln!("{len}");
     let mut res = len.bytes().collect::<Vec<u8>>();
     res.extend(s);
     return res;
@@ -656,7 +747,8 @@ fn dir_hash(dir: &Path, print: bool, write: bool) -> Result<String, anyhow::Erro
     let tree_hash = hasher.finalize();
     let tree_hash = format!("{:x}", tree_hash);
     if write {
-        write_object(&tree_hash, &data).context("write to tree object")?;
+        write_object(&std::path::absolute(".")?, &tree_hash, &data)
+            .context("write to tree object")?;
     }
     Ok(tree_hash)
 }
@@ -673,19 +765,22 @@ fn calc_blob_hash(filename: &Path, write: bool) -> Result<String, anyhow::Error>
     let blob_hash = hasher.finalize();
     let blob_hash = format!("{:x}", blob_hash);
     if write {
-        write_object(&blob_hash, &data).context("write to blob object")?;
+        write_object(&std::path::absolute(".")?, &blob_hash, &data)
+            .context("write to blob object")?;
     }
     Ok(blob_hash)
 }
 
-fn write_object(hash: &String, data: &[u8]) -> Result<(), anyhow::Error> {
+fn write_object(root: &Path, hash: &String, data: &[u8]) -> Result<(), anyhow::Error> {
     let prefix = &hash[..2];
     let path = &hash[2..];
-    let path = PathBuf::from(".git/objects").join(prefix).join(path);
+    let path = PathBuf::from(root.join(".git/objects"))
+        .join(prefix)
+        .join(path);
     let f = if std::fs::exists(&path)? {
         std::fs::File::open(&path).context(format!("open file {:?}", path))?
     } else {
-        let prefix = PathBuf::from(".git/objects").join(prefix);
+        let prefix = PathBuf::from(root.join(".git/objects")).join(prefix);
         std::fs::create_dir_all(&prefix)?;
         std::fs::File::create(&path).context(format!("create file {:?}", path))?
     };
