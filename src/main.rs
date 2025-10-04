@@ -1,7 +1,6 @@
 #[allow(unused_imports)]
 use sha1::{Digest, Sha1};
 use std::collections::{self, HashMap};
-use std::fmt::format;
 use std::fs::{self};
 use std::{
     io::{BufRead, Read, Write},
@@ -58,16 +57,6 @@ enum Commands {
         git_url: String,
         dir: String,
     },
-}
-
-#[repr(u8)]
-enum PackObjType {
-    Commit = 1,
-    Tree,
-    Blob,
-    Tag,
-    OfsDelta,
-    RefDelta,
 }
 
 #[derive(Debug)]
@@ -239,7 +228,7 @@ fn store_idx(
 
     idx.insert(obj_hash.clone(), BaseRef::new(&data, otype));
 
-    write_object(dir, &obj_hash, &obj);
+    let _ = write_object(dir, &obj_hash, &obj);
 }
 
 fn init_git_repo(path: &Path) -> Result<(), anyhow::Error> {
@@ -306,8 +295,6 @@ fn main() -> Result<(), anyhow::Error> {
             parent,
         } => {
             use chrono::Local;
-            use std::fmt::Write;
-
             let now = Local::now();
             let now = now.timestamp();
             let mut commit = Vec::new();
@@ -463,6 +450,7 @@ fn main() -> Result<(), anyhow::Error> {
                         assert_eq!(data.len(), size);
                         let mut j = 0;
                         let src_size = decode_size(&data, &mut j, true);
+                        assert_eq!(src_size, base_content.len());
                         let dst_size = decode_size(&data, &mut j, true);
                         let mut new_dst = Vec::<u8>::with_capacity(dst_size);
                         while j < data.len() {
@@ -643,7 +631,6 @@ struct Objects(Vec<Object>);
 #[derive(Debug)]
 struct Object {
     kind: ObjectType,
-    size: usize,
     hash: String,
     path: PathBuf,
     mode: &'static str,
@@ -677,7 +664,6 @@ fn dir_hash(dir: &Path, print: bool, write: bool) -> Result<String, anyhow::Erro
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let mut obj = Object {
-                size: 0,
                 hash: String::new(),
                 path: entry.path(),
                 kind: ObjectType::Blob,
